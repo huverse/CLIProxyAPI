@@ -5,6 +5,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"crypto/tls"
@@ -45,6 +46,11 @@ import (
 )
 
 const oauthCallbackSuccessHTML = `<html><head><meta charset="utf-8"><title>Authentication successful</title><script>setTimeout(function(){window.close();},5000);</script></head><body><h1>Authentication successful!</h1><p>You can close this window.</p><p>This window will close automatically in 5 seconds.</p></body></html>`
+
+const (
+	managementPanelModelFetchSnippet = "let t=await Zf.fetchModels(n,s||void 0);"
+	managementPanelModelFetchPatch   = "let l=await U.get(`/models`),t=Mf(l?.data??l?.models??l,{dedupe:!0});"
+)
 
 type serverOptionConfig struct {
 	extraMiddleware      []gin.HandlerFunc
@@ -510,6 +516,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
 		mgmt.PUT("/config.yaml", s.mgmt.PutConfigYAML)
 		mgmt.GET("/latest-version", s.mgmt.GetLatestVersion)
+		mgmt.GET("/models", s.mgmt.GetAvailableModels)
 
 		mgmt.GET("/debug", s.mgmt.GetDebug)
 		mgmt.PUT("/debug", s.mgmt.PutDebug)
@@ -695,7 +702,23 @@ func (s *Server) serveManagementControlPanel(c *gin.Context) {
 		}
 	}
 
-	c.File(filePath)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.WithError(err).Error("failed to read management control panel asset")
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+
+	c.Data(http.StatusOK, "text/html; charset=utf-8", patchManagementControlPanelHTML(data))
+}
+
+func patchManagementControlPanelHTML(data []byte) []byte {
+	return bytes.Replace(
+		data,
+		[]byte(managementPanelModelFetchSnippet),
+		[]byte(managementPanelModelFetchPatch),
+		1,
+	)
 }
 
 func (s *Server) enableKeepAlive(timeout time.Duration, onTimeout func()) {
