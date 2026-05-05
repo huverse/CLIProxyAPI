@@ -2,10 +2,30 @@ package registry
 
 import "testing"
 
-func TestCodexFreeModelsExcludeGPT55(t *testing.T) {
-	model := findModelInfo(GetCodexFreeModels(), "gpt-5.5")
-	if model != nil {
-		t.Fatal("expected codex free tier to NOT include gpt-5.5")
+func TestCodexCatalogModelsDoNotInjectBuiltins(t *testing.T) {
+	tierModels := map[string][]*ModelInfo{
+		"free": GetCodexFreeCatalogModels(),
+		"team": GetCodexTeamCatalogModels(),
+		"plus": GetCodexPlusCatalogModels(),
+		"pro":  GetCodexProCatalogModels(),
+	}
+
+	for tier, models := range tierModels {
+		t.Run(tier, func(t *testing.T) {
+			if model := findModelInfo(models, codexBuiltinImageModelID); model != nil {
+				t.Fatalf("expected raw codex %s catalog to exclude runtime built-in %s", tier, codexBuiltinImageModelID)
+			}
+		})
+	}
+}
+
+func TestCodexPaidCatalogIncludesSpark(t *testing.T) {
+	paidUnion := append([]*ModelInfo{}, GetCodexPlusCatalogModels()...)
+	paidUnion = append(paidUnion, GetCodexProCatalogModels()...)
+	paidUnion = append(paidUnion, GetCodexTeamCatalogModels()...)
+
+	if model := findModelInfo(paidUnion, "gpt-5.3-codex-spark"); model == nil {
+		t.Fatal("expected raw codex paid catalog union to include gpt-5.3-codex-spark")
 	}
 }
 

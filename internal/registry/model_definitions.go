@@ -53,9 +53,21 @@ func GetCodexFreeModels() []*ModelInfo {
 	return WithCodexBuiltins(cloneModelInfos(getModels().CodexFree))
 }
 
+// GetCodexFreeCatalogModels returns the raw Codex free plan tier from
+// models.json without runtime built-ins.
+func GetCodexFreeCatalogModels() []*ModelInfo {
+	return cloneModelInfos(getModels().CodexFree)
+}
+
 // GetCodexTeamModels returns model definitions for the Codex team plan tier.
 func GetCodexTeamModels() []*ModelInfo {
 	return WithCodexBuiltins(cloneModelInfos(getModels().CodexTeam))
+}
+
+// GetCodexTeamCatalogModels returns the raw Codex team plan tier from
+// models.json without runtime built-ins.
+func GetCodexTeamCatalogModels() []*ModelInfo {
+	return cloneModelInfos(getModels().CodexTeam)
 }
 
 // GetCodexPlusModels returns model definitions for the Codex plus plan tier.
@@ -63,9 +75,21 @@ func GetCodexPlusModels() []*ModelInfo {
 	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPlus))
 }
 
+// GetCodexPlusCatalogModels returns the raw Codex plus plan tier from
+// models.json without runtime built-ins.
+func GetCodexPlusCatalogModels() []*ModelInfo {
+	return cloneModelInfos(getModels().CodexPlus)
+}
+
 // GetCodexProModels returns model definitions for the Codex pro plan tier.
 func GetCodexProModels() []*ModelInfo {
 	return WithCodexBuiltins(cloneModelInfos(getModels().CodexPro))
+}
+
+// GetCodexProCatalogModels returns the raw Codex pro plan tier from models.json
+// without runtime built-ins.
+func GetCodexProCatalogModels() []*ModelInfo {
+	return cloneModelInfos(getModels().CodexPro)
 }
 
 // GetKimiModels returns the standard Kimi (Moonshot AI) model definitions.
