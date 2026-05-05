@@ -221,8 +221,16 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if err = decodeHTTPResponseBody(httpResp); err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
+		b, readErr := io.ReadAll(httpResp.Body)
+		if readErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+			return resp, readErr
+		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		err = newCodexStatusErr(httpResp.StatusCode, b)
@@ -372,8 +380,16 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if err = decodeHTTPResponseBody(httpResp); err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
+		b, readErr := io.ReadAll(httpResp.Body)
+		if readErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+			return resp, readErr
+		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		err = newCodexStatusErr(httpResp.StatusCode, b)
@@ -466,6 +482,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if err = decodeHTTPResponseBody(httpResp); err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("codex executor: close response body error: %v", errClose)
+		}
+		return nil, err
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		data, readErr := io.ReadAll(httpResp.Body)
 		if errClose := httpResp.Body.Close(); errClose != nil {
@@ -786,8 +809,10 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
+		r.Header.Set("Accept-Encoding", "identity")
 	} else {
 		r.Header.Set("Accept", "application/json")
+		r.Header.Set("Accept-Encoding", compressedAcceptEncoding)
 	}
 	r.Header.Set("Connection", "Keep-Alive")
 
@@ -814,6 +839,9 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if stream {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

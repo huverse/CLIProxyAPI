@@ -265,6 +265,29 @@ func TestApplyCodexHeadersDoesNotInjectClientOnlyHeadersByDefault(t *testing.T) 
 	}
 }
 
+func TestApplyCodexHeadersAcceptEncodingPolicy(t *testing.T) {
+	nonStreamReq, err := http.NewRequest(http.MethodPost, "https://example.com/responses/compact", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	applyCodexHeaders(nonStreamReq, nil, "oauth-token", false, nil)
+	if got := nonStreamReq.Header.Get("Accept-Encoding"); got != compressedAcceptEncoding {
+		t.Fatalf("non-stream Accept-Encoding = %q, want %q", got, compressedAcceptEncoding)
+	}
+
+	streamReq, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"header:Accept-Encoding": compressedAcceptEncoding,
+	}}
+	applyCodexHeaders(streamReq, auth, "oauth-token", true, nil)
+	if got := streamReq.Header.Get("Accept-Encoding"); got != "identity" {
+		t.Fatalf("stream Accept-Encoding = %q, want identity", got)
+	}
+}
+
 func contextWithGinHeaders(headers map[string]string) context.Context {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()

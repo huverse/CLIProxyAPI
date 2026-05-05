@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -75,5 +76,45 @@ func TestCodexExecutorCompactAddsDefaultInstructions(t *testing.T) {
 				t.Fatalf("payload = %s", string(resp.Payload))
 			}
 		})
+	}
+}
+
+func TestCodexExecutorCompactDecodesZstdResponse(t *testing.T) {
+	const responseJSON = `{"id":"resp_zstd","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`
+
+	var gotEncoding string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "zstd")
+		_, _ = w.Write(zstdBytes(t, []byte(responseJSON)))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":"hello"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Alt:          "responses/compact",
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotEncoding != compressedAcceptEncoding {
+		t.Fatalf("Accept-Encoding = %q, want %q", gotEncoding, compressedAcceptEncoding)
+	}
+	if !bytes.Equal(resp.Payload, []byte(responseJSON)) {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+	if got := resp.Headers.Get("Content-Encoding"); got != "" {
+		t.Fatalf("response Content-Encoding = %q, want empty", got)
 	}
 }

@@ -120,6 +120,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	httpReq.Header.Set("Accept", "application/json")
+	httpReq.Header.Set("Accept-Encoding", compressedAcceptEncoding)
 	var attrs map[string]string
 	if auth != nil {
 		attrs = auth.Attributes
@@ -155,8 +157,16 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		}
 	}()
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if err = decodeHTTPResponseBody(httpResp); err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
+		b, readErr := io.ReadAll(httpResp.Body)
+		if readErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+			return resp, readErr
+		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
@@ -228,6 +238,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 	}
 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Accept-Encoding", "identity")
 	httpReq.Header.Set("Cache-Control", "no-cache")
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -254,8 +265,22 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		return nil, err
 	}
 	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+	if err = decodeHTTPResponseBody(httpResp); err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close response body error: %v", errClose)
+		}
+		return nil, err
+	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		b, _ := io.ReadAll(httpResp.Body)
+		b, readErr := io.ReadAll(httpResp.Body)
+		if readErr != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, readErr)
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("openai compat executor: close response body error: %v", errClose)
+			}
+			return nil, readErr
+		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
 		if errClose := httpResp.Body.Close(); errClose != nil {

@@ -3,8 +3,6 @@ package executor
 import (
 	"bufio"
 	"bytes"
-	"compress/flate"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,9 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
-	"github.com/klauspost/compress/zstd"
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -801,135 +797,6 @@ func normalizeClaudeTemperatureForThinking(body []byte) []byte {
 	return body
 }
 
-type compositeReadCloser struct {
-	io.Reader
-	closers []func() error
-}
-
-func (c *compositeReadCloser) Close() error {
-	var firstErr error
-	for i := range c.closers {
-		if c.closers[i] == nil {
-			continue
-		}
-		if err := c.closers[i](); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-// peekableBody wraps a bufio.Reader around the original ReadCloser so that
-// magic bytes can be inspected without consuming them from the stream.
-type peekableBody struct {
-	*bufio.Reader
-	closer io.Closer
-}
-
-func (p *peekableBody) Close() error {
-	return p.closer.Close()
-}
-
-func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadCloser, error) {
-	if body == nil {
-		return nil, fmt.Errorf("response body is nil")
-	}
-	if contentEncoding == "" {
-		// No Content-Encoding header.  Attempt best-effort magic-byte detection to
-		// handle misbehaving upstreams that compress without setting the header.
-		// Only gzip (1f 8b) and zstd (28 b5 2f fd) have reliable magic sequences;
-		// br and deflate have none and are left as-is.
-		// The bufio wrapper preserves unread bytes so callers always see the full
-		// stream regardless of whether decompression was applied.
-		pb := &peekableBody{Reader: bufio.NewReader(body), closer: body}
-		magic, peekErr := pb.Peek(4)
-		if peekErr == nil || (peekErr == io.EOF && len(magic) >= 2) {
-			switch {
-			case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
-				gzipReader, gzErr := gzip.NewReader(pb)
-				if gzErr != nil {
-					_ = pb.Close()
-					return nil, fmt.Errorf("magic-byte gzip: failed to create reader: %w", gzErr)
-				}
-				return &compositeReadCloser{
-					Reader: gzipReader,
-					closers: []func() error{
-						gzipReader.Close,
-						pb.Close,
-					},
-				}, nil
-			case len(magic) >= 4 && magic[0] == 0x28 && magic[1] == 0xb5 && magic[2] == 0x2f && magic[3] == 0xfd:
-				decoder, zdErr := zstd.NewReader(pb)
-				if zdErr != nil {
-					_ = pb.Close()
-					return nil, fmt.Errorf("magic-byte zstd: failed to create reader: %w", zdErr)
-				}
-				return &compositeReadCloser{
-					Reader: decoder,
-					closers: []func() error{
-						func() error { decoder.Close(); return nil },
-						pb.Close,
-					},
-				}, nil
-			}
-		}
-		return pb, nil
-	}
-	encodings := strings.Split(contentEncoding, ",")
-	for _, raw := range encodings {
-		encoding := strings.TrimSpace(strings.ToLower(raw))
-		switch encoding {
-		case "", "identity":
-			continue
-		case "gzip":
-			gzipReader, err := gzip.NewReader(body)
-			if err != nil {
-				_ = body.Close()
-				return nil, fmt.Errorf("failed to create gzip reader: %w", err)
-			}
-			return &compositeReadCloser{
-				Reader: gzipReader,
-				closers: []func() error{
-					gzipReader.Close,
-					func() error { return body.Close() },
-				},
-			}, nil
-		case "deflate":
-			deflateReader := flate.NewReader(body)
-			return &compositeReadCloser{
-				Reader: deflateReader,
-				closers: []func() error{
-					deflateReader.Close,
-					func() error { return body.Close() },
-				},
-			}, nil
-		case "br":
-			return &compositeReadCloser{
-				Reader: brotli.NewReader(body),
-				closers: []func() error{
-					func() error { return body.Close() },
-				},
-			}, nil
-		case "zstd":
-			decoder, err := zstd.NewReader(body)
-			if err != nil {
-				_ = body.Close()
-				return nil, fmt.Errorf("failed to create zstd reader: %w", err)
-			}
-			return &compositeReadCloser{
-				Reader: decoder,
-				closers: []func() error{
-					func() error { decoder.Close(); return nil },
-					func() error { return body.Close() },
-				},
-			}, nil
-		default:
-			continue
-		}
-	}
-	return body, nil
-}
-
 func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, cfg *config.Config) {
 	hdrDefault := func(cfgVal, fallback string) string {
 		if cfgVal != "" {
@@ -1019,7 +886,7 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		r.Header.Set("Accept-Encoding", "identity")
 	} else {
 		r.Header.Set("Accept", "application/json")
-		r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+		r.Header.Set("Accept-Encoding", compressedAcceptEncoding)
 	}
 	// Legacy mode keeps OS/Arch runtime-derived; stabilized mode pins OS/Arch
 	// to the configured baseline while still allowing newer official

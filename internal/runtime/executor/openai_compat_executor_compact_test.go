@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -54,5 +55,79 @@ func TestOpenAICompatExecutorCompactPassthrough(t *testing.T) {
 	}
 	if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
 		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestOpenAICompatExecutorCompactDecodesZstdResponse(t *testing.T) {
+	const responseJSON = `{"id":"resp_zstd","object":"response.compaction","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`
+
+	var gotEncoding string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "zstd")
+		_, _ = w.Write(zstdBytes(t, []byte(responseJSON)))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	resp, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","input":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Alt:          "responses/compact",
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gotEncoding != compressedAcceptEncoding {
+		t.Fatalf("Accept-Encoding = %q, want %q", gotEncoding, compressedAcceptEncoding)
+	}
+	if !bytes.Equal(resp.Payload, []byte(responseJSON)) {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+	if got := resp.Headers.Get("Content-Encoding"); got != "" {
+		t.Fatalf("response Content-Encoding = %q, want empty", got)
+	}
+}
+
+func TestOpenAICompatExecutorStreamEnforcesIdentityAcceptEncoding(t *testing.T) {
+	var gotEncoding string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEncoding = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url":               server.URL + "/v1",
+		"api_key":                "test",
+		"header:Accept-Encoding": compressedAcceptEncoding,
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected chunk error: %v", chunk.Err)
+		}
+	}
+	if gotEncoding != "identity" {
+		t.Fatalf("Accept-Encoding = %q, want identity", gotEncoding)
 	}
 }
